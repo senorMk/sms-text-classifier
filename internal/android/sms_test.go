@@ -1,10 +1,74 @@
 package android
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestMessagesWithoutOTPColumn(t *testing.T) {
+	for _, stream := range []string{"stdout", "stderr"} {
+		t.Run(stream, func(t *testing.T) {
+			testMessagesWithoutOTPColumn(t, stream)
+		})
+	}
+}
+
+func testMessagesWithoutOTPColumn(t *testing.T, stream string) {
+	adb := filepath.Join(t.TempDir(), "adb")
+	// Android's content command reports SQL errors on stdout with exit 0.
+	script := `#!/bin/sh
+case "$*" in
+  *contains_otp*)
+    echo 'Error while accessing provider:sms'
+    echo 'android.database.sqlite.SQLiteException: no such column: contains_otp'
+    ;;
+  *)
+    echo 'Row: 0 _id=7, thread_id=3, address=Bank, person=NULL, date=1700000000000, date_sent=0, type=1, read=1, creator=x, service_center=NULL, body=hello, contains_otp=1'
+    echo 'second line'
+    echo 'Row: 1 _id=8, thread_id=3, address=Friend, person=NULL, date=1700000001000, date_sent=0, type=2, read=0, creator=x, service_center=+123, body=thanks'
+    ;;
+esac
+`
+	if stream == "stderr" {
+		script = strings.ReplaceAll(script, "echo 'Error while accessing provider:sms'", "echo 'Error while accessing provider:sms' >&2")
+		script = strings.ReplaceAll(script, "echo 'android.database.sqlite.SQLiteException: no such column: contains_otp'", "echo 'android.database.sqlite.SQLiteException: no such column: contains_otp' >&2")
+	}
+	if err := os.WriteFile(adb, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (&Toolchain{ADB: adb}).Messages("test-device", PullOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d messages, want 2", len(got))
+	}
+	if got[0].ID != 7 || got[0].ContainsOTP || got[0].Body != "hello, contains_otp=1\nsecond line" {
+		t.Fatalf("unexpected fallback record: %#v", got[0])
+	}
+	if got[1].ID != 8 || got[1].ServiceCenter != "+123" || got[1].Body != "thanks" {
+		t.Fatalf("unexpected second record: %#v", got[1])
+	}
+}
+
+func TestParseQueryProviderErrors(t *testing.T) {
+	for _, detail := range []string{
+		"android.database.sqlite.SQLiteException: no such column: contains_otp",
+		"java.lang.SecurityException: Permission Denial",
+	} {
+		got, err := ParseQuery(strings.NewReader("Error while accessing provider:sms\n" + detail))
+		if err == nil || !strings.Contains(err.Error(), detail) || len(got) != 0 {
+			t.Fatalf("got %v, %v; want provider error %q", got, err, detail)
+		}
+	}
+	got, err := ParseQuery(strings.NewReader("No result found.\n"))
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty store: got %v, %v", got, err)
+	}
+}
 
 func TestParseQuery(t *testing.T) {
 	out := `Row: 0 _id=16148, thread_id=92, address=Google, person=NULL, date=1790587291210, date_sent=1790587289000, type=1, read=1, creator=com.google.android.apps.messaging, contains_otp=1, service_center=+918299901900, body=G-538204 is your Google verification code. Don't share your code with anyone.
@@ -82,10 +146,10 @@ Row: 2 _id=10, thread_id=1, address=+15559999, person=NULL, date=1700000001000, 
 }
 
 func TestParseQuerySkipsJunk(t *testing.T) {
-	// A provider error lands on stdout before any row and is ignored; text
+	// Unrelated text before any row is ignored; text
 	// after the last row is indistinguishable from a body continuation, so it
 	// stays with the record it follows.
-	out := "Error while accessing provider:sms\nRow: 0 _id=1, thread_id=1, address=+1, person=NULL, date=1, date_sent=0, type=1, read=0, creator=x, contains_otp=0, service_center=NULL, body=hi\ntrailing noise"
+	out := "unrelated startup noise\nRow: 0 _id=1, thread_id=1, address=+1, person=NULL, date=1, date_sent=0, type=1, read=0, creator=x, contains_otp=0, service_center=NULL, body=hi\ntrailing noise"
 	got, err := ParseQuery(strings.NewReader(out))
 	if err != nil {
 		t.Fatalf("ParseQuery() error = %v", err)
