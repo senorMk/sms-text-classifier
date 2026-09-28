@@ -159,9 +159,24 @@ func (t *Toolchain) Messages(serial string, opt PullOptions) ([]Message, error) 
 // pageMessages runs a single `content query` over the _id range (lo, hi] and
 // parses the result.
 func (t *Toolchain) pageMessages(serial string, lo, hi int64, since time.Time, kinds []Kind) ([]Message, error) {
+	msgs, err := t.queryMessages(serial, lo, hi, since, kinds, projection)
+	if err != nil && strings.Contains(err.Error(), "no such column: contains_otp") {
+		// contains_otp is a vendor extension, absent on some phones.
+		cols := make([]string, 0, len(projection)-1)
+		for _, col := range projection {
+			if col != "contains_otp" {
+				cols = append(cols, col)
+			}
+		}
+		return t.queryMessages(serial, lo, hi, since, kinds, cols)
+	}
+	return msgs, err
+}
+
+func (t *Toolchain) queryMessages(serial string, lo, hi int64, since time.Time, kinds []Kind, cols []string) ([]Message, error) {
 	args := t.deviceArgs(serial, "shell", "content", "query",
 		"--uri", "content://sms",
-		"--projection", strings.Join(projection, ":"),
+		"--projection", strings.Join(cols, ":"),
 	)
 	if where := buildWhere(lo, hi, since, kinds); where != "" {
 		// The quotes are part of the argument on purpose: adb joins its
@@ -182,7 +197,7 @@ func (t *Toolchain) pageMessages(serial string, lo, hi int64, since time.Time, k
 		return nil, fmt.Errorf("content query: %w", err)
 	}
 
-	msgs, err := ParseQuery(stdout)
+	msgs, err := parseQuery(stdout, cols)
 	if err != nil {
 		cmd.Wait()
 		return nil, err
@@ -192,6 +207,11 @@ func (t *Toolchain) pageMessages(serial string, lo, hi int64, since time.Time, k
 		if msg == "" {
 			msg = err.Error()
 		}
+		return nil, fmt.Errorf("content query: %s", msg)
+	}
+	// Some Android versions write the same provider error to stderr while
+	// still returning exit status 0.
+	if msg := strings.TrimSpace(stderr.String()); strings.Contains(msg, "Error while accessing provider:") {
 		return nil, fmt.Errorf("content query: %s", msg)
 	}
 	return msgs, nil
@@ -227,22 +247,27 @@ func buildWhere(lo, hi int64, since time.Time, kinds []Kind) string {
 // like `, creator=`. So the output is reassembled into logical records first —
 // a line only starts a record when it passes every check in recordStart.
 func ParseQuery(r io.Reader) ([]Message, error) {
+	return parseQuery(r, projection)
+}
+
+func parseQuery(r io.Reader, cols []string) ([]Message, error) {
 	sc := bufio.NewScanner(r)
 	// Bodies can be long (MMS forwards, concatenated segments); 1 MiB per
 	// line is a generous ceiling that still bounds a runaway allocation.
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var (
-		msgs   []Message
-		cur    strings.Builder
-		active bool
-		want   int // index of the next row, per round trip
+		msgs          []Message
+		cur           strings.Builder
+		active        bool
+		providerError strings.Builder
+		want          int // index of the next row, per round trip
 	)
 	for sc.Scan() {
 		line := strings.TrimSuffix(sc.Text(), "\r")
-		if n, ok := recordStart(line, want); ok {
+		if n, ok := recordStartColumns(line, want, cols); ok {
 			if active {
-				msgs = append(msgs, parseRecord(cur.String()))
+				msgs = append(msgs, parseRecordColumns(cur.String(), cols))
 			}
 			cur.Reset()
 			cur.WriteString(line[n:])
@@ -254,13 +279,21 @@ func ParseQuery(r io.Reader) ([]Message, error) {
 			cur.WriteByte('\n')
 			cur.WriteString(line)
 		}
-		// Text before the first record (or after a parse hiccup) is ignored.
+		// Android's content command can print provider errors on stdout
+		// and exit successfully. Drain the pipe before reporting the error.
+		if !active && (providerError.Len() > 0 || strings.HasPrefix(line, "Error while accessing provider:")) {
+			providerError.WriteString(line)
+			providerError.WriteByte('\n')
+		}
 	}
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
+	if providerError.Len() > 0 {
+		return nil, fmt.Errorf("content query: %s", strings.TrimSpace(providerError.String()))
+	}
 	if active {
-		msgs = append(msgs, parseRecord(cur.String()))
+		msgs = append(msgs, parseRecordColumns(cur.String(), cols))
 	}
 	return msgs, nil
 }
@@ -276,6 +309,10 @@ var rowRe = regexp.MustCompile(`^Row: (\d+) ` + regexp.QuoteMeta(projection[0]) 
 //   - every remaining column delimiter appears, in order — a body line that
 //     merely imitates a row won't have them all.
 func recordStart(line string, want int) (int, bool) {
+	return recordStartColumns(line, want, projection)
+}
+
+func recordStartColumns(line string, want int, cols []string) (int, bool) {
 	m := rowRe.FindStringSubmatch(line)
 	if m == nil {
 		return 0, false
@@ -285,7 +322,7 @@ func recordStart(line string, want int) (int, bool) {
 		return 0, false
 	}
 	rest := line[len(m[0]):]
-	for _, col := range projection[1:] {
+	for _, col := range cols[1:] {
 		delim := ", " + col + "="
 		j := strings.Index(rest, delim)
 		if j < 0 {
@@ -300,42 +337,48 @@ func recordStart(line string, want int) (int, bool) {
 // leading `Row: <n> ` is already gone; a lingering "_id=" prefix is tolerated
 // so a stray caller can't silently zero out the id.
 func parseRecord(rec string) Message {
-	rec = strings.TrimPrefix(rec, projection[0]+"=")
-	vals := splitRecord(rec, projection)
+	return parseRecordColumns(rec, projection)
+}
 
-	get := func(i int) string {
-		if i >= len(vals) {
-			return ""
+func parseRecordColumns(rec string, cols []string) Message {
+	rec = strings.TrimPrefix(rec, cols[0]+"=")
+	vals := splitRecord(rec, cols)
+
+	get := func(col string) string {
+		for i, name := range cols {
+			if name == col {
+				return vals[i]
+			}
 		}
-		return vals[i]
+		return ""
 	}
-	num := func(i int) int64 {
-		n, _ := strconv.ParseInt(strings.TrimSpace(get(i)), 10, 64)
+	num := func(col string) int64 {
+		n, _ := strconv.ParseInt(strings.TrimSpace(get(col)), 10, 64)
 		return n
 	}
-	ms := time.UnixMilli(num(4)).UTC()
+	ms := time.UnixMilli(num("date")).UTC()
 	// A zero epoch means the column was NULL or unset.
-	if num(4) == 0 {
+	if num("date") == 0 {
 		ms = time.Time{}
 	}
 	sent := time.Time{}
-	if num(5) != 0 {
-		sent = time.UnixMilli(num(5)).UTC()
+	if num("date_sent") != 0 {
+		sent = time.UnixMilli(num("date_sent")).UTC()
 	}
 
 	return Message{
-		ID:            num(0),
-		ThreadID:      num(1),
-		Address:       get(2),
-		Person:        nullString(get(3)),
+		ID:            num("_id"),
+		ThreadID:      num("thread_id"),
+		Address:       get("address"),
+		Person:        nullString(get("person")),
 		Date:          ms,
 		DateSent:      sent,
-		Type:          Kind(num(6)),
-		Read:          num(7) != 0,
-		Creator:       nullString(get(8)),
-		ContainsOTP:   num(9) != 0,
-		ServiceCenter: nullString(get(10)),
-		Body:          get(11),
+		Type:          Kind(num("type")),
+		Read:          num("read") != 0,
+		Creator:       nullString(get("creator")),
+		ContainsOTP:   num("contains_otp") != 0,
+		ServiceCenter: nullString(get("service_center")),
+		Body:          get("body"),
 	}
 }
 
