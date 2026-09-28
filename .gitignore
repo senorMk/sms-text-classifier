@@ -1,0 +1,10 @@
+sms-classifier
+sms-classifier-darwin
+sms-classifier-linux
+dist/
+
+# local message cache / exports (never commit SMS data)
+*.jsonl
+*.csv
+export/
+.DS_Store
