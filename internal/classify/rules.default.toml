@@ -1,0 +1,394 @@
+# Default rules for android-sms-classifier.
+#
+# Copy this next to your binary (or into $XDG_CONFIG_HOME/android-sms-classifier/)
+# and edit freely — `sms-classifier --init-rules` writes a fresh copy.
+#
+# HOW A RULE WORKS
+#   Every condition kind present on a rule must hold (AND).
+#   Within one kind, any entry is enough (OR) — so writing "alpha" five times
+#   in a body adds nothing. To make a category more convincing you add another
+#   rule pointing at it, not more words to an existing one.
+#   The not_* kinds invert: the rule is skipped if any of them is present.
+#   A rule that fires adds `weight` to its category. The heaviest category
+#   wins; the gap to the runner-up becomes the confidence.
+#
+#   category      required; any name you like
+#   label         short human name, shown as the classification reason
+#   weight        default 1.0
+#   body_contains case-insensitive substrings
+#   body_regex    RE2 patterns; put (?i) in the pattern for case-insensitive
+#   not_body_contains / not_body_regex   exclusions, same matching
+#   sender_contains / sender_regex   same, matched against the contact name
+#                                   when known, else the raw address
+#   sender_kinds  shortcode | longnumber | alphanumeric | email | unknown
+#   decisive      win outright when this rule fires, ignoring total weight.
+#                 For categorical signals only.
+#   contains_otp  the device's own SMS retriever flagged a code in the body
+#   inbound       true = arrived from someone else, false = you sent it
+#   thread_replied the conversation has a message you sent back
+#   bulk          the sender has sent many messages sharing one template
+#   min_length / max_length   body length in characters
+
+[engine]
+# Category for anything no rule claimed.
+fallback = "other"
+# Total rule weight that counts as a fully-confident match. A single
+# weight-1 rule is a hint; two independent ones are a decision.
+strong = 2.0
+# Below this confidence a message is flagged for the optional LLM review pass.
+review_below = 0.55
+# How many identical messages an address has to send, AND must be at least
+# half its traffic, before it counts as a bulk sender rather than a chatty
+# contact.
+bulk_template = 5
+
+[ui]
+# Display order in the picker. Any category named only by a rule below is
+# still classified; add it here to give it a home.
+order = ["otp", "banking", "delivery", "travel", "alerts", "work", "personal", "promo", "spam", "other"]
+color = { otp = "86", banking = "220", delivery = "39", travel = "45", alerts = "214", work = "111", personal = "150", promo = "170", spam = "196", other = "245" }
+
+# --- otp: one-time passcodes and verification ---------------------------------
+
+[[rule]]
+category = "otp"
+label = "device retriever flagged a code"
+weight = 2.5
+# The phone itself recognized a passcode here, which is a categorical fact,
+# not a hint: it beats the bank category the message may also match.
+decisive = true
+contains_otp = true
+
+[[rule]]
+category = "otp"
+label = "code + verify language"
+weight = 1.6
+body_regex = [
+  '(?i)\b\d{4,8}\b[^.\n]{0,40}\b(code|otp|pin|passcode|verification|verify|security)\b',
+  '(?i)\b(code|otp|pin|passcode|one[ -]time password)\b[^.\n]{0,45}\b(is|to|are|:|=|:)\s*[A-Za-z0-9-]{4,12}',
+  '(?i)\b(verify|authenticate|validate)\b[^.\n]{0,30}\b(code|number|token|link)\b',
+  '(?i)\b(otp|one[ -]time password)\b[^.\n]{0,60}\b(expire|valid|login|portal|sc mobile)\b',
+  '(?i)\b[a-z]{3,6}-\d{4,8}\b',
+]
+
+[[rule]]
+category = "otp"
+label = "signed-in link or one-time link"
+weight = 1.0
+body_regex = ['(?i)https?://\S*(verify|confirm|otp|auth|magiclink)\S*']
+
+
+# --- banking: cards, transfers, statements ------------------------------------
+
+[[rule]]
+category = "banking"
+label = "transactional bank language"
+weight = 1.8
+body_regex = [
+  '(?i)\b(available balance|account balance|balance is|closing balance|opening balance)\b',
+  '(?i)\bbalance\s*[:=]',
+  '(?i)\b(card|payment|debit|credit) (charged|declined|approved|pending|reversed|blocked|frozen)\b',
+  '(?i)\b(transaction|payment|transfer|withdrawal|deposit)\b.{0,25}\b(successful|completed|confirmed|failed|declined|reversed)\b',
+  '(?i)\b(inflow|outflow)\b.{0,10}\balert\b',
+  '(?i)\b(received|credited|debited|withdrawn|deposited|reserved for purchase|paid)\b[^.\n]{0,50}\b(zmw|zar|usd|eur|gbp|ngn|ghs|ksh|kes|inr|pkr|rs\.?|₹|\$|£|€|\d+[.,]\d{2})\b',
+  '(?i)\b(charged|payment of|transfer of|withdrawal|transaction of)\b[^.\n]{0,30}\b(rs\.?|inr|usd|zar|ksh|ngn|ghs|zmw|zk|kes|pkr|ugx|tsh|etb|₦|₱|₹|฿|rm|rp|₺|\$|£|€)\b',
+  # A transaction word next to a decimal amount, with no currency name in
+  # sight — "your payment of K5.00" is a bank alert whatever the symbol is.
+  '(?i)\b(payment|paid|credited|debited|withdrawn|deposited|transferred|received)\b[^.\n]{0,20}\d+[.,]\d{2}\b',
+  # Card-notification formats name the card and the account around the
+  # amount, so the currency can sit on either side of the transaction verb.
+  '(?i)\b(cheq|cheque)\s*a/c\b|\ba/c\.{2,}|\bcard\.{2,}|reserved for purchase|using card\b|has sent you\b',
+  '(?i)\b(withdraw|send|received) (money|cash)\b[^.\n]{0,30}\d+[.,]\d{2}\b',
+  '(?i)\b(was |been )?(paid|credited|debited|refunded)\b[^.\n]{0,25}\b(to|into|on) (your|the) (account|a/c|acct|wallet|balance)\b',
+  '(?i)\b(wht|withholding tax|vat|taxpayer|tax (return|payment|due|clearance)|certificate of (registration|compliance)|tin number)\b',
+  '(?i)\b(meter: ?\d|units: ?kwh|prepaid (electricity|water|token)|electricity token)\b',
+  '(?i)\b(avail|available)\s*(bal|balance)\b',
+  '(?i)\b(a/c|acct|account)\s*(no\.?|number)?\s*[x*]{2,}',
+  '(?i)\b(card|account|cheq|cheque) (ending|ending in)\s*\d{3,4}\b',
+  '(?i)\b(utr|neft|imps|rtgs|upi|ref(erence)? no)\b',
+  '(?i)\b(interest|emi|loan|instal?ment|microfinance|hire purchase) (due|repayment|balance|application|request)\b',
+  '(?i)\binstal?ment is due\b|\bloan application\b',
+  '(?i)\b(bill payment|utility bill|pay your .* bills)\b',
+  '(?i)\bmobile money\b',
+]
+
+[[rule]]
+category = "banking"
+label = "known bank or payment sender"
+weight = 1.2
+sender_contains = [
+  "bank", "banque", "fnb", "absa", "capitec", "nedbank", "standard bank", "stanchart", "stanbank",
+  "firstnational", "first national", "zambia national", "znb", "lupiya", "momo", "zazu",
+  "hdfc", "icici", "sbi", "axis bank", "kotak", "paytm", "phonepe", "gpay",
+  "chase", "wells fargo", "bank of america", "citi", "amex", "capital one",
+  "monzo", "starling", "revolut", "wise", "paypal", "cash app", "venmo", "zelle",
+]
+
+[[rule]]
+category = "banking"
+label = "otp but money words"
+weight = 0.8
+contains_otp = true
+body_contains = ["balance", "rs.", "inr", "account", "card", "payment", "withdraw", "deposit"]
+
+# --- delivery: orders, couriers, tracking -------------------------------------
+
+[[rule]]
+category = "delivery"
+label = "parcel or order language"
+weight = 1.8
+body_regex = [
+  '(?i)\b(order|parcel|package|shipment|consignment|courier)\b.{0,60}\b(shipped|dispatch|delivered|out for|arriv(e|ed|al|ing)|collected|pending|created|raised|booked|ready|in transit)\b',
+  '(?i)\b(out for delivery|now out for delivery|attempted delivery|delivery attempt)\b',
+  '(?i)\b(tracking|awb|waybill|order)\s*(no\.?|id|#)\s*[:#]?\s*\w{4,}',
+  '(?i)\b(collect(ed)? (from|at)|available for pickup|ready for pickup)\b',
+  '(?i)\b(dhl|fedex|ups|usps|royale mail|blue dart|dpd|aramex|postnl|evri|dpd|dpd)\b',
+  '(?i)\b(undeliverable|address (could not|was) (not|un))\b',
+]
+
+# The brand words only count alongside order language, so a restaurant
+# advert stays marketing rather than becoming a parcel.
+[[rule]]
+category = "delivery"
+label = "food or groceries"
+weight = 1.5
+body_regex = [
+  '(?i)\b(order|delivery)\b[^.\n]{0,25}\b(placed|confirmed|preparing|on (its )?way|out for|cancelled|ready)\b',
+  '(?i)\b(foodpanda|swiggy|zomato|ubereats|doordash|grubhub|just eat|deliveroo|domino.s)\b[^.\n]{0,40}\b(order|delivery|dispatched|delivering)\b',
+]
+
+# --- travel: flights, trains, rides, check-in ---------------------------------
+
+# Restricted to non-human senders: "am on the gate" from a friend is a
+# conversation, not a boarding pass.
+[[rule]]
+category = "travel"
+label = "boarding pass or ticket"
+weight = 2.0
+sender_kinds = ["alphanumeric", "email"]
+body_regex = [
+  '(?i)\b(boarding pass|gate|seat|flight|pnr)\b',
+  '(?i)\b(check-?in (is )?open|departs at|departure (time|date)|arrival (time|date))\b',
+  '(?i)\b(train|ticket|coach|compartment)\b.{0,20}\b(no\.?|#)\s*\w{4,}',
+  '(?i)\b(ride|driver|pick-?up|drop-?off|fare|surge)\b.{0,25}\b(eta|minutes|away|arriving|arrived|\$|₹|rs)\b',
+  '(?i)\b(taxi|uber|ola|bolt|cab )?\b(booking|ride) (confirmed|cancelled|completed)\b',
+]
+
+[[rule]]
+category = "travel"
+label = "known travel sender"
+weight = 1.2
+sender_contains = ["airline", "airways", "airlines", "airport", "railway", "railways", "irctc", "amtrak", "emirates", "qatar airways", "air bnb", "makemytrip", "booking.com", "redbus"]
+
+# --- alerts: service and system notifications ---------------------------------
+
+[[rule]]
+category = "alerts"
+label = "service notice"
+weight = 1.6
+body_regex = [
+  '(?i)\b(maintenance|scheduled|outage|downtime|degraded)\b.{0,30}\b(planned|on|from|between|today|tomorrow|\d{1,2}[:.]\d{2})\b',
+  '(?i)\b(service|network|server|app) (is )?(unavailable|disruption|interrupted)\b',
+  '(?i)\b(we (are|will be) (performing|doing)\b|scheduled downtime)\b',
+  '(?i)\b(airtime|data) balance\b',
+  '(?i)\bthank you for (buying|purchasing)\b',
+  '(?i)\b(successfully|successfully) (purchased|activated|processed|credited)\b',
+  '(?i)\bpurchase (successful|confirmed|complete)\b',
+  '(?i)\b(plan|bundle|package|subscription)\s+(activated|active|expires?|expiry|renew)\b',
+  '(?i)\b(giving you|you (now )?have)\s+\d+\s*(min|mins|minutes|mb|gb|sms|airtime|data)\b',
+  '(?i)\b(security alert|new sign-?in|unusual (activity|login)|password (was )?changed)\b',
+  '(?i)\b(avoid scams|scam alert|scam warning|fraud (watch|alert)|report (a )?fraud|verify sources)\b',
+  '(?i)\b(think before you click|phishing|scams? (steal|target)|awareness (campaign|message))\b',
+  '(?i)\b(offline|unavailable|down)\s+(from|on|between|until)\b',
+  '(?i)\b(we apologise|we apologize)\b[^.\n]{0,40}\b(try again|at this time|later)\b',
+  '(?i)\b(could not|unable to|cannot|can.t) (process|complete|verify|validate)\b',
+  '(?i)\b(remaining|expiry|valid (till|until)|due on)\b.{0,20}\b(plan|recharge|offer|validity)\b',
+  '(?i)\b(dial \*|use the .* app|ussd)\b',
+]
+
+[[rule]]
+category = "alerts"
+label = "telecom sender"
+weight = 1.4
+sender_contains = ["airtel", "vodafone", "idea", "jio", "bsnl", "mtn", "orange", "telkom", "tigo", "cellc", "etisalat", "verizon", "at&t", "t-mobile", "o2", "three.co", "telstra", "vodacom"]
+
+# --- work ---------------------------------------------------------------------
+
+[[rule]]
+category = "work"
+label = "work tooling"
+weight = 1.6
+body_regex = [
+  '(?i)\b(meeting|invite|invitation|agenda) (is |has been )?(scheduled|cancelled|rescheduled)\b',
+  '(?i)\b(invites? you to|join us for|saving (a )?seat|register (now|for)|rsvp)\b',
+  '(?i)\b(agm|annual general meeting|symposium|conference|webinar|workshop|training)\b',
+  '(?i)\b(calendar|cal) (invite|reminder)\b',
+  '(?i)\b(standup|sync|retro|1:1) (at|on|scheduled)\b',
+  '(?i)\b(please )?(review|approve|sign off) (the|this|my|your)\b',
+  '(?i)\b(jira|linear|github|gitlab|slack|teams|zoom|confluence|asana|notion|jsm)\b',
+  '(?i)\b(build|deployment|deploy|pipeline) (failed|succeeded|passed|failed)\b',
+]
+
+[[rule]]
+category = "work"
+label = "support case or ticket"
+weight = 1.5
+body_regex = [
+  '(?i)\b(ticket|case|ref(erence)?)\s*#?\s*\d+\s+(is |has been )?(closed|resolved|escalated|open(ed)?)\b',
+  '(?i)\b(closed|resolved)\b.{0,20}\b(please )?(rate|feedback|review)\b',
+]
+
+# --- personal: someone you know ----------------------------------------------
+
+[[rule]]
+category = "personal"
+label = "two-way conversation"
+weight = 1.8
+thread_replied = true
+sender_kinds = ["longnumber"]
+bulk = false
+
+[[rule]]
+category = "personal"
+label = "known contact"
+weight = 1.5
+sender_kinds = ["longnumber"]
+bulk = false
+min_length = 40
+# A long number with a long, unique message is usually a person — unless it
+# reads like machine output, which is what the bank and courier senders
+# look like when they text from a long number too.
+not_body_regex = ['(?i)\b(balance|order|shipped|delivered|appointment|meeting|otp|code|offer|off|discount|due|statement|invoice|booking|confirmed|expires|valid|renew)\b']
+
+[[rule]]
+category = "personal"
+label = "conversational text from a long number"
+weight = 1.2
+sender_kinds = ["longnumber"]
+bulk = false
+min_length = 12
+# People ask questions and write more than one sentence. Machine output
+# rarely does, and when it does the bank/courier rules outweigh this anyway.
+body_regex = ['[?!]', '\n', '(\.|!|\?)\s+[A-Z]']
+
+# "Currently at lunch" is indistinguishable from a notification by shape
+# alone. The exclusions are what make it a person, so this stays a low-weight
+# hint that the LLM pass can confirm.
+[[rule]]
+category = "personal"
+label = "short plain text from a long number"
+weight = 0.9
+sender_kinds = ["longnumber"]
+bulk = false
+min_length = 6
+max_length = 100
+not_body_regex = [
+  '(?i)\b(balance|order|shipped|delivered|appointment|otp|code|offer|discount|due|statement|invoice|booking|confirmed|expires|valid|renew|payment|transaction|transfer|withdraw|cashback|bundle|minutes|airtime|data|parcel|courier|dial|ussd|loan|instal|token|receipt|reference|success|failed|pending)\b',
+  '(?i)\b(zmw|zk|zar|ngn|ghs|ksh|kes|usd|inr|rs\.|TSH|ugx|etb|₦|₱|₹|฿|rm|rp|₺|\$|£|€)\s?\d',
+]
+
+[[rule]]
+category = "personal"
+label = "sent by you"
+weight = 1.0
+inbound = false
+
+# --- promo: marketing ---------------------------------------------------------
+
+[[rule]]
+category = "promo"
+label = "marketing offer language"
+weight = 1.8
+body_regex = [
+  '(?i)\b\d{1,3}\s?%\s?(off|discount)\b',
+  '(?i)\b(limited (time|period)|today only|ends (tonight|soon)|hurry|don.t miss|last chance)\b',
+  '(?i)\b(shop now|buy now|order now|claim now|grab (it|the deal)|offer (expires|ends))\b',
+  '(?i)\b(free (shipping|delivery|gift)|flat \d+% off|cashback|use code)\b.{0,20}\b[A-Z0-9]{4,}\b',
+  '(?i)\b(as low as|super reduced|starting (from|at)|introductory|tariff|rate plan|cheapest (data|airtime|bundle))\b',
+  '(?i)\b(we miss you|we want you back|your cart (is )?(waiting|saved)|new arrivals|sale (is )?(on|now))\b',
+  '(?i)\bunsubscribe\b',
+]
+
+[[rule]]
+category = "promo"
+label = "bulk sender"
+weight = 1.2
+bulk = true
+inbound = true
+# Deliberately no bare "off"/"free"/"order": a person saying "phone is off"
+# must not read as marketing.
+body_regex = ['(?i)\b(offer|sale|deal|discount|voucher|coupon|cashback|promo|bonanza|jackpot odds|register now|claim)\b']
+
+# --- spam ---------------------------------------------------------------------
+
+[[rule]]
+category = "spam"
+label = "classic scam"
+weight = 2.2
+body_regex = [
+  # "Congratulations" on its own is not a scam — telecom and data bundles
+  # open with it. The prize words have to be there too.
+  '(?i)\b(you have won|congratulat\w+[^.\n]{0,20}\b(won|winner|prize)|you (are|have been) selected|claim your prize|\bwinner\b|lucky draw)\b',
+  '(?i)\b(lottery|jackpot|prize winner|inheritance|fund release)\b',
+  '(?i)\b(bitcoin|crypto|investment (opportunity|returns)|double your|forex|mt4 signals)\b',
+  # "send money" on its own is what every mobile-money service advertises.
+  '(?i)\b(nigerian prince|wire (the )?money (to|for)|send (us )?money (to us|for your|now to)|processing fee (is )?required|upfront fee)\b',
+  '(?i)\b(your account (will be|has been) (suspended|closed|blocked)|verify your account immediately)\b',
+  '(?i)\b(urgent.{0,20}(action|response) required|within 24 hours or)\b',
+]
+
+[[rule]]
+category = "spam"
+label = "unknown short code"
+weight = 1.1
+sender_kinds = ["shortcode"]
+body_regex = ['(?i)\b(click|tap|reply|visit)\b.{0,30}\b(http|www\.|link|\.com|\.net|\.top|\.xyz)\b']
+
+# --- fallback -----------------------------------------------------------------
+
+[[rule]]
+category = "other"
+label = "automated sender, nothing matched"
+weight = 0.2
+sender_kinds = ["shortcode", "alphanumeric", "email"]
+
+# --- what each category means -------------------------------------------------
+#
+# These one-sentence definitions are what the optional model review pass
+# (--review) is given as its answer options. They are deliberately literal and
+# mutually exclusive, because a model answers the words it is given rather than
+# the words you meant. The regex rules above decide; these explain.
+#
+# A category with no entry here still works — the model is handed a plain
+# generic description — so adding a rule for a new category does not force you
+# to come here too.
+
+[category.otp]
+description = "A one-time passcode, verification code, PIN, or sign-in link that the recipient is meant to use right now."
+
+[category.banking]
+description = "Money: a card charge, a transfer, a balance, a loan or instalment, a bill payment, mobile money, or a bank account alert."
+
+[category.delivery]
+description = "A parcel, courier or food order being sent, dispatched, out for delivery, delivered, collected, or tracked."
+
+[category.travel]
+description = "A flight, train, bus or ride: a ticket, boarding pass, check-in, seat, gate, departure, arrival or fare."
+
+[category.alerts]
+description = "A service or account notice: maintenance, an outage, plan or bundle expiry, a balance top-up, or a security warning."
+
+[category.work]
+description = "Work communication: a meeting or calendar invite, a ticket or case update, a build or deployment notice, or a work tool's notification."
+
+[category.personal]
+description = "A message from a person having a conversation, including short replies and messages inside an ongoing two-way thread."
+
+[category.promo]
+description = "Advertising: a discount, sale, voucher, cashback, prize promotion, or a marketing campaign."
+
+[category.spam]
+description = "Fraud or junk: phishing, a prize or lottery lure, an investment or crypto scheme, a fake account warning, or an unwanted advertisement."
+
+[category.other]
+description = "Anything that does not clearly belong to one of the categories above."
