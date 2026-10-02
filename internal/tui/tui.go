@@ -39,6 +39,7 @@ const (
 	stageCategory
 	stageMessage
 	stageViewer
+	stageThread
 )
 
 var (
@@ -83,6 +84,11 @@ type Model struct {
 	filtered []store.Record
 	category string // current scope; "" means all messages
 	offset   int    // cursor into filtered, for the reader
+
+	threaded     bool
+	threads      []store.Thread
+	threadIndex  int
+	exportReturn stage
 
 	catList list.Model
 	msgList list.Model
@@ -290,6 +296,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The panel wraps, so a new width means a new panel.
 		m.refreshPanel()
 		m.layout()
+		if m.stage == stageThread {
+			m.renderThread()
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -308,7 +317,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice = fmt.Sprintf("exported %d messages → %s", msg.count, msg.path)
 		}
-		m.showCategories()
+		if m.exportReturn == stageThread || (m.exportReturn == stageMessage && m.threaded) {
+			m.stage = m.exportReturn
+			m.layout()
+		} else {
+			m.showCategories()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -364,7 +378,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.catList, cmd = m.catList.Update(msg)
 	case stageMessage:
 		m.msgList, cmd = m.msgList.Update(msg)
-	case stageViewer:
+	case stageViewer, stageThread:
 		m.viewer, cmd = m.viewer.Update(msg)
 	}
 	return m, cmd
@@ -454,12 +468,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.layout()
 			return m, nil
 		case msg.Type == tea.KeyEnter && !typing:
+			if m.threaded {
+				return m, m.showThread()
+			}
 			return m, m.showViewer()
+		case isRune(msg, 't') && !typing:
+			m.threaded = !m.threaded
+			m.showMessages()
+			return m, nil
 		case isRune(msg, 'e') && !typing:
 			return m, m.openExport()
 		}
 		var cmd tea.Cmd
 		m.msgList, cmd = m.msgList.Update(msg)
+		return m, cmd
+
+	case stageThread:
+		switch {
+		case msg.Type == tea.KeyEsc:
+			m.stage = stageMessage
+			m.layout()
+			return m, nil
+		case isRune(msg, 'e'):
+			return m, m.openExport()
+		}
+		var cmd tea.Cmd
+		m.viewer, cmd = m.viewer.Update(msg)
 		return m, cmd
 
 	case stageViewer:
@@ -498,6 +532,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // An empty path means "next to the cache, named after what is on screen".
 func (m *Model) openExport() tea.Cmd {
 	m.exporting = true
+	m.exportInput.Prompt = "export › "
+	if m.stage == stageThread || (m.stage == stageMessage && m.threaded) {
+		m.exportInput.Prompt = "export full thread › "
+	}
 	m.exportInput.SetValue("")
 	m.exportInput.CursorEnd()
 	m.exportInput.Focus()
@@ -537,6 +575,15 @@ func (m *Model) handleExportKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // exportScope is what "e" exports: the category or "all" currently open, and
 // when the list is filtered, only the rows still visible.
 func (m *Model) exportScope() []store.Record {
+	if m.stage == stageThread {
+		return m.threads[m.threadIndex].Records
+	}
+	if m.stage == stageMessage && m.threaded {
+		if i := m.selectedThread(); i >= 0 {
+			return m.threads[i].Records
+		}
+		return nil
+	}
 	switch m.stage {
 	case stageCategory:
 		// On the category picker there is no narrower scope than everything.
@@ -549,7 +596,7 @@ func (m *Model) exportScope() []store.Record {
 		return m.filtered[m.offset : m.offset+1]
 	}
 	visible := m.msgList.VisibleItems()
-	if len(visible) == 0 || m.msgList.FilterState() == list.Unfiltered {
+	if m.msgList.FilterState() == list.Unfiltered {
 		return m.filtered
 	}
 	ids := make(map[int64]bool, len(visible))
@@ -581,6 +628,11 @@ func (m *Model) startExport(path string, records []store.Record) tea.Cmd {
 		scope = "message-" + strconv.FormatInt(m.currentID(), 10)
 	}
 
+	if m.stage == stageThread || (m.stage == stageMessage && m.threaded) {
+		scope = "thread-message-" + strconv.FormatInt(records[0].ID, 10)
+		filtered = false
+	}
+	m.exportReturn = m.stage
 	m.stage = stageSync
 	m.status = fmt.Sprintf("exporting %d messages", len(records))
 	st, rules, serial := m.st, m.opt.Rules, m.st.Serial
@@ -722,6 +774,10 @@ func bucketDesc(b store.Bucket) string {
 
 // showMessages opens the message list for the current scope.
 func (m *Model) showMessages() {
+	if m.threaded {
+		m.showThreads()
+		return
+	}
 	if m.category == "" {
 		m.filtered = m.st.Records
 	} else {
@@ -902,6 +958,8 @@ func (m *Model) View() string {
 		return strings.Join([]string{m.categoryStage()}, "\n")
 	case stageMessage:
 		return strings.Join([]string{m.msgList.View(), m.footer(m.msgFooter())}, "\n")
+	case stageThread:
+		return strings.Join([]string{m.viewer.View(), m.footer(hintStyle.Render("↑/↓ scroll · e export full thread · esc back"))}, "\n")
 	case stageViewer:
 		return strings.Join([]string{m.viewer.View(),
 			m.footer(hintStyle.Render("←/→ message · ↑/↓ scroll · e export · esc back"))}, "\n")
@@ -953,12 +1011,15 @@ func (m *Model) footer(hint string) string {
 }
 
 func (m *Model) msgFooter() string {
+	if m.threaded {
+		return hintStyle.Render("enter read thread · / filter · t messages · e export selected thread · esc back")
+	}
 	scope := m.category
 	if scope == "" {
 		scope = "all messages"
 	}
 	return hintStyle.Render(fmt.Sprintf(
-		"enter read · type to filter (%d shown) · e export · esc back · %s",
+		"enter read · type to filter (%d shown) · t threads · e export · esc back · %s",
 		len(m.filtered), scope))
 }
 

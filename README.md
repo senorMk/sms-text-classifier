@@ -58,6 +58,10 @@ go build -o sms-classifier .
    to run the review pass, `e` to export.
 4. **Browse** — a dense list; type to filter, `enter` to read a message, `e` to
    export what is on screen — including just the rows a filter has left visible.
+   Press `t` to switch between messages and threads. Threads show the sender,
+   message count, latest activity and a preview. `/` searches all messages in
+   each thread; `enter` opens the full conversation, oldest first, with sent
+   and received messages labelled. `e` exports the selected or open thread.
 5. **Read** — full body with the verdict and the reason for it. `←/→` (or `n`/`p`)
    move between messages, `↑/↓` scroll, `e` exports this one message, `esc`
    goes back.
@@ -103,8 +107,8 @@ go build -o sms-classifier .
 
 ## Exporting
 
-`e` opens a one-line prompt from any of the three browse screens — the category
-picker, the message list, and the message reader. Enter with nothing typed and it
+`e` opens a one-line prompt from the category picker, message list, message
+reader, thread list or thread reader. Enter with nothing typed and it
 writes a timestamped file next to the cache, named after what is on screen:
 
 | Where you are | Exports | Default name |
@@ -113,6 +117,13 @@ writes a timestamped file next to the cache, named after what is on screen:
 | Message list | the current category | `sms-<serial>-<category>-<date>.html` |
 | Message list, filtered | only the rows you can see | `…-<category>-filtered-<date>.html` |
 | Message reader | that one message | `sms-<serial>-message-<id>-<date>.html` |
+| Thread list or reader | the full selected conversation, oldest first | `sms-<serial>-thread-message-<oldest-id>-<date>.html` |
+
+Threads use Android's thread ID. When it is missing, messages with the same
+address are grouped; messages with neither are kept separate. A category or
+search match surfaces the whole thread, including replies in other categories.
+Thread exports include the full conversation available in the cache, and return
+you to the same thread after writing.
 
 Type a path to choose your own. The extension picks the format: `.html`, `.csv`
 or `.json`. It never overwrites: an existing file is an error, and the path in
@@ -137,6 +148,15 @@ It gives you the count per category as filter chips, a text filter over
 sender/body/reason, a "low confidence only" toggle for the messages the rules
 were unsure about, and click-to-expand for long bodies (the text stays in the
 page, so the search still reaches it). `/` focuses the filter, `esc` clears it.
+
+Use the **View** selector to switch between **Messages** and **Threads**.
+Threads are ordered by latest activity; expand one to read its messages oldest
+first. Text, category and confidence filters find matching threads while keeping
+their full conversations readable. **Export thread (.json)** downloads every
+message in that thread, including its metadata and classification. Only messages
+already included in the HTML file are available; an export created with CLI
+filters may contain partial conversations. HTML thread exports remain fully
+offline.
 
 Bodies are written through `html/template`, so an SMS arriving from an attacker
 renders as the inert text it is — a message containing `<script>` shows up as

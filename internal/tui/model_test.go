@@ -285,7 +285,7 @@ func pressExport(t *testing.T, m Model, path string) (Model, string) {
 	if !m.exporting {
 		t.Fatal("e did not open the export prompt")
 	}
-	if strings.Contains(m.footer(m.catFooter()), "export ›") == false {
+	if strings.Contains(m.footer(m.catFooter()), m.exportInput.Prompt) == false {
 		t.Error("the export prompt is not on screen")
 	}
 	for _, r := range path {

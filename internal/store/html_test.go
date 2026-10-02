@@ -1,13 +1,65 @@
 package store
 
 import (
+	"encoding/json"
+	"html"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/senorMk/android-text-classifier/internal/android"
 )
+
+func TestThreadExportHTMLData(t *testing.T) {
+	r := rec(9007199254740993, "</script><script>alert(1)</script>\n\"quoted\"", "otp", 1, "rules")
+	r.ThreadID = 9007199254740995
+	r.Address = "\"><img src=x>"
+	page := render(t, []Record{r})
+	match := regexp.MustCompile(`data-record="([^"]*)"`).FindStringSubmatch(page)
+	if len(match) != 2 {
+		t.Fatal("missing serialized record")
+	}
+	var got Record
+	if err := json.Unmarshal([]byte(html.UnescapeString(match[1])), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != r.ID || got.ThreadID != r.ThreadID || got.Body != r.Body || got.Address != r.Address {
+		t.Fatalf("record did not round-trip: %+v", got)
+	}
+	if !strings.Contains(page, `data-thread="thread:9007199254740995"`) {
+		t.Fatal("thread identity lost precision")
+	}
+	if strings.Count(page, "<script") != 1 {
+		t.Fatal("record escaped into script markup")
+	}
+}
+
+// Write a self-checking browser fixture with:
+// SMS_THREAD_FIXTURE=/tmp/threads.html go test ./internal/store -run TestWriteThreadFixture
+func TestWriteThreadFixture(t *testing.T) {
+	path := os.Getenv("SMS_THREAD_FIXTURE")
+	if path == "" {
+		t.Skip("set SMS_THREAD_FIXTURE for the browser check")
+	}
+	a := rec(1, "first reply", "personal", 1, "rules")
+	b := rec(9007199254740993, `</script><img src=x onerror="window.__pwned=true"> verification`, "otp", 0.2, "rules")
+	a.ThreadID, b.ThreadID = 9, 9
+	a.Type = android.KindSent
+	a.Date = b.Date.Add(-time.Hour)
+	c := rec(3, "unrelated", "promo", 1, "rules")
+	c.ThreadID = 10
+	page := render(t, []Record{b, c, a})
+	checks, err := os.ReadFile("testdata/threads.browser.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = strings.Replace(page, "</body>", "<script>"+string(checks)+"</script></body>", 1)
+	if err := os.WriteFile(path, []byte(page), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func opts() HTMLOptions {
 	return HTMLOptions{
