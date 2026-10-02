@@ -2,6 +2,7 @@ package store
 
 import (
 	_ "embed"
+	"encoding/json"
 	"html/template"
 	"io"
 	"strconv"
@@ -24,6 +25,8 @@ const neutralColor = "#7a8199"
 // htmlRow is one pre-rendered table row.
 type htmlRow struct {
 	Record
+	ThreadKey string
+	JSON      string
 	When      string
 	Sender    string
 	Address   string
@@ -79,7 +82,12 @@ func ExportHTML(w io.Writer, records []Record, opts HTMLOptions) error {
 		if r.Class.Source != "" && r.Class.Source != SourceRules {
 			classes = append(classes, "model")
 		}
+		data, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
 		rows = append(rows, htmlRow{
+			ThreadKey: ThreadKey(r), JSON: string(data),
 			Record:    r,
 			When:      r.Date.Local().Format("2006-01-02 15:04"),
 			Sender:    r.Sender(),
@@ -114,9 +122,17 @@ func ExportHTML(w io.Writer, records []Record, opts HTMLOptions) error {
 		Records:   rows,
 	}
 	if len(records) > 0 {
-		// The store is newest-first, so the last row is the oldest.
-		data.First = records[len(records)-1].Date.Local().Format("2 Jan 2006")
-		data.Last = records[0].Date.Local().Format("2 Jan 2006")
+		first, last := records[0].Date, records[0].Date
+		for _, r := range records[1:] {
+			if r.Date.Before(first) {
+				first = r.Date
+			}
+			if r.Date.After(last) {
+				last = r.Date
+			}
+		}
+		data.First = first.Local().Format("2 Jan 2006")
+		data.Last = last.Local().Format("2 Jan 2006")
 	}
 	return htmlTemplateOnce.Execute(w, data)
 }
