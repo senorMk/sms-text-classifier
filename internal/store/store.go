@@ -465,14 +465,21 @@ func (s *Store) Save() error {
 
 // ExportJSON writes records as a JSON array.
 func ExportJSON(w io.Writer, records []Record) error {
+	var rows []exportRecord
+	if records != nil {
+		rows = make([]exportRecord, 0, len(records))
+	}
+	for _, r := range records {
+		rows = append(rows, forExport(r))
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(records)
+	return enc.Encode(rows)
 }
 
 var csvHeader = []string{
 	"id", "date", "kind", "read", "address", "person", "category",
-	"confidence", "source", "reason", "body",
+	"confidence", "source", "reason", "body", "sender", "receiver",
 }
 
 // ExportCSV writes records as CSV.
@@ -482,6 +489,7 @@ func ExportCSV(w io.Writer, records []Record) error {
 		return err
 	}
 	for _, r := range records {
+		participants := forExport(r)
 		row := []string{
 			fmt.Sprint(r.ID),
 			r.Date.Format(time.RFC3339),
@@ -494,6 +502,8 @@ func ExportCSV(w io.Writer, records []Record) error {
 			r.Class.Source,
 			r.Class.Reason,
 			r.Body,
+			participants.Sender,
+			participants.Receiver,
 		}
 		if err := cw.Write(row); err != nil {
 			return err

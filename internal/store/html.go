@@ -29,8 +29,7 @@ type htmlRow struct {
 	JSON      string
 	When      string
 	Sender    string
-	Address   string
-	HasPerson bool
+	Receiver  string
 	Body      string
 	Color     string
 	RowClass  string
@@ -82,20 +81,20 @@ func ExportHTML(w io.Writer, records []Record, opts HTMLOptions) error {
 		if r.Class.Source != "" && r.Class.Source != SourceRules {
 			classes = append(classes, "model")
 		}
-		data, err := json.Marshal(r)
+		participants := forExport(r)
+		data, err := json.Marshal(participants)
 		if err != nil {
 			return err
 		}
 		rows = append(rows, htmlRow{
 			ThreadKey: ThreadKey(r), JSON: string(data),
-			Record:    r,
-			When:      r.Date.Local().Format("2006-01-02 15:04"),
-			Sender:    r.Sender(),
-			Address:   r.Address,
-			HasPerson: r.Person != "" && r.Person != r.Address,
-			Body:      r.Body,
-			Color:     colorFor(opts, r.Class.Category),
-			RowClass:  strings.Join(classes, " "),
+			Record:   r,
+			When:     r.Date.Local().Format("2006-01-02 15:04"),
+			Sender:   participants.Sender,
+			Receiver: participants.Receiver,
+			Body:     r.Body,
+			Color:    colorFor(opts, r.Class.Category),
+			RowClass: strings.Join(classes, " "),
 		})
 	}
 
