@@ -145,7 +145,7 @@ mail yourself. `--category` and `--search` compose with it, so
 `-c otp --export otps.html` is just the OTPs.
 
 It gives you the count per category as filter chips, a text filter over
-sender/body/reason, a "low confidence only" toggle for the messages the rules
+sender/receiver/body/reason, a "low confidence only" toggle for the messages the rules
 were unsure about, and click-to-expand for long bodies (the text stays in the
 page, so the search still reaches it). `/` focuses the filter, `esc` clears it.
 
@@ -157,6 +157,12 @@ message in that thread, including its metadata and classification. Only messages
 already included in the HTML file are available; an export created with CLI
 filters may contain partial conversations. HTML thread exports remain fully
 offline.
+
+Each message shows its sender and receiver, with the contact name and number
+when available. **You** identifies the device owner, whose name and number are
+not stored in the SMS cache. Outgoing messages show You as sender; incoming
+messages show You as receiver. JSON and CSV exports include explicit `sender`
+and `receiver` fields, including downloads from **Export thread (.json)**.
 
 Bodies are written through `html/template`, so an SMS arriving from an attacker
 renders as the inert text it is — a message containing `<script>` shows up as
