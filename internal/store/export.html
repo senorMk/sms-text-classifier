@@ -79,7 +79,7 @@
   tbody tr:hover { background: color-mix(in srgb, var(--panel) 70%, transparent); }
   td.when { white-space: nowrap; color: var(--dim); font-size: 12.5px; width: 1%; }
   td.cat  { white-space: nowrap; width: 1%; }
-  td.from { width: 22%; max-width: 260px; overflow-wrap: anywhere; }
+  td.from, td.to { max-width: 260px; overflow-wrap: anywhere; }
   td.why  { color: var(--dim); font-size: 12px; width: 20%; }
   .tag {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -126,7 +126,7 @@
 
 <div class="controls">
   <label class="toggle">View <select id="view"><option value="messages">Messages</option><option value="threads">Threads</option></select></label>
-  <input id="q" type="search" placeholder="filter by text, sender or reason…"
+  <input id="q" type="search" placeholder="filter by text, sender, receiver or reason…"
          autocomplete="off" spellcheck="false">
   <span class="chip on" data-cat="" style="--swatch:{{.Neutral}}">all<span class="n">{{.Total}}</span></span>
   {{range .Cats}}<span class="chip" data-cat="{{.Name}}" style="--swatch:{{.Color}}">{{.Name}}<span class="n">{{.Count}}</span></span>
@@ -139,14 +139,15 @@
 <div id="threads" hidden></div>
 <table id="messages">
   <thead>
-    <tr><th>When</th><th>Category</th><th>From</th><th>Message</th><th>Reason</th></tr>
+    <tr><th>When</th><th>Category</th><th>From</th><th>To</th><th>Message</th><th>Reason</th></tr>
   </thead>
   <tbody>
     {{range .Records}}
     <tr data-id="{{.ID}}" data-thread="{{.ThreadKey}}" data-record="{{.JSON}}" data-cat="{{.Class.Category}}" data-source="{{.Class.Source}}" class="{{.RowClass}}">
       <td class="when mono">{{.When}}</td>
       <td class="cat"><span class="tag" style="background:{{.Color}}">{{.Class.Category}}</span></td>
-      <td class="from">{{.Sender}}{{if .HasPerson}}<br><span class="mono" style="color:var(--dim)">{{.Address}}</span>{{end}}</td>
+      <td class="from">{{.Sender}}</td>
+      <td class="to">{{.Receiver}}</td>
       <td class="body clamp">{{.Body}}</td>
       <td class="why">{{.Class.Reason}}</td>
     </tr>
@@ -221,7 +222,7 @@
           var r = entry.record;
           var kind = ({1: "Received", 2: "Sent", 3: "Draft", 4: "Outbox", 5: "Failed", 6: "Queued"})[r.type] || "Unknown";
           var message = element("article", "message" + (r.type === 2 ? " sent" : ""));
-          message.appendChild(element("div", "meta", entry.row.querySelector(".when").textContent + " · " + kind + " · " + (r.person || r.address || "Unknown sender") + " · " + r.classification.category));
+          message.appendChild(element("div", "meta", entry.row.querySelector(".when").textContent + " · " + kind + " · From: " + r.sender + " · To: " + r.receiver + " · " + r.classification.category));
           message.appendChild(element("p", "", r.body));
           conversation.appendChild(message);
         });

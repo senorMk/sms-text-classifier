@@ -25,6 +25,8 @@
     assert(messages[0].textContent.includes("first reply"), "oldest first");
     assert(messages[0].classList.contains("sent"), "sent direction");
     assert(messages[1].textContent.includes("Received"), "received direction");
+    assert(messages[0].textContent.includes("From: You · To: Kalela (+260977000111)"), "outgoing participants");
+    assert(messages[1].textContent.includes("From: Kalela (+260977000111) · To: You"), "incoming participants");
     assert(!thread.querySelector("img") && !window.__pwned, "hostile SMS stays text");
     var blob, filename;
     URL.createObjectURL = function (value) { blob = value; return "blob:test"; };
@@ -35,6 +37,8 @@
     var exported = JSON.parse(json);
     assert(exported.length === 2, "download only this thread");
     assert(exported[0].body === "first reply", "download order");
+    assert(exported[0].sender === "You" && exported[0].receiver === "Kalela (+260977000111)", "download outgoing participants");
+    assert(exported[1].sender === "Kalela (+260977000111)" && exported[1].receiver === "You", "download incoming participants");
     assert(json.includes('"id":9007199254740993'), "download preserves large IDs");
     assert(filename === "sms-thread-message-1.json", "download name");
     query.value = "absent";
